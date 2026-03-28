@@ -1,68 +1,196 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
-def computing_reqs(outflows, inflows):
-    net_cash = np.array(outflows) - np.array(inflows) 
-    return np.max(cumulative)
-
-# ----- parameters ----     
-homes =
-years = np.arange(2026, 2037)  
-n_years = len(years)            
-
-p_weather_failure =
-weather_multiplier =
-
-repair_mean =
-replace_mean =
-loan_cap =
-
-p_sale =
-p_refi =
-
-inflation_mean =
-inflation_std =
+# -------------------------------------------------------
+# Core Funding Function
+# -------------------------------------------------------
+def compute_funding_requirement(outflows, inflows):
+    net_cash = np.array(outflows) - np.array(inflows)
+    cumulative = np.cumsum(net_cash)
+    return np.max(cumulative), cumulative
 
 
+# -------------------------------------------------------
+# Parameters
+# -------------------------------------------------------
+HOMES        = 72848
+YEARS        = np.arange(2026, 2038)   # fixed: 2026–2037 inclusive (12 years)
+N_YEARS      = len(YEARS)
+
+# Pipe failure
+# NOTE: separated into two distinct probabilities (were incorrectly the same variable)
+p_base_failure   = 0.02     # annual base probability a pipe fails (~2% per year, ~50yr lifespan)
+p_weather_event  = 0.002    # probability of an extreme weather year
+weather_multiplier = 2.0    # failure rate multiplier during weather event
+
+# Repair vs replacement
+# Repairs excluded from program per problem scope — only replacements are loans
+p_replace = 0.40            # 40% of failures → full replacement (loan issued)
+                             # 60% of failures → repair (NOT funded by program, ignored)
+
+# Loan parameters
+replace_mean = 7386          # mean replacement cost
+replace_std  = 1500          # standard deviation of replacement cost
+loan_cap     = 10000         # max loan amount per LEAP rules
+
+# Repayment triggers
+p_sale = 0.0878              # annual probability of home sale
+p_refi = 0.0325              # annual probability of refinancing / HELOC
+
+# Inflation
+inflation_mean = 0.0321
+inflation_std  = 0.0394
+
+
+# -------------------------------------------------------
+# Single Simulation (vectorized over homes for speed)
+# -------------------------------------------------------
 def single_simulation():
-    outflows = np.zeros(n_years)
-    inflows = np.zeros(n_years)
+    outflows = np.zeros(N_YEARS)
+    inflows  = np.zeros(N_YEARS)
 
-    for t in range(n_years):
-        inflation = np.random.normal(inflation_mean, inflation_std)
+    for t in range(N_YEARS):
+        # Inflation for this year
+        inflation        = np.random.normal(inflation_mean, inflation_std)
         inflation_factor = (1 + inflation) ** t
 
-        weather_event = np.random.rand() < p_weather_failure  
+        # Weather shock (Bernoulli draw)
+        weather_event = np.random.rand() < p_weather_event
+        p_failure     = p_base_failure * (weather_multiplier if weather_event else 1.0)
 
-        for home in range(homes):
-            p_failure = p_weather_failure * (weather_multiplier if weather_event else 1)  
+        # --- Vectorized over all homes ---
+        # Step 1: which homes fail this year?
+        failures = np.random.rand(HOMES) < p_failure
 
-            if np.random.rand() < p_failure:
-                cost = np.random.normal(replace_mean, 1500)
-                cost = min(cost, loan_cap)
-                cost *= inflation_factor          
-                outflows[t] += cost              
+        # Step 2: of those, which get a full replacement (vs repair, which is excluded)?
+        replacements = failures & (np.random.rand(HOMES) < p_replace)
+        n_replacements = replacements.sum()
 
-                for future_t in range(t, n_years):
-                    if (np.random.rand() < p_sale) or (np.random.rand() < p_refi): 
-                        inflows[future_t] += cost
-                        break
-            else:
-                cost = np.random.normal(repair_mean, 500)
-                cost *= inflation_factor
-                outflows[t] += cost
+        if n_replacements == 0:
+            continue
 
-    funding = computing_reqs(outflows, inflows)  
-    return funding                               
+        # Step 3: draw replacement costs, cap at loan_cap, apply inflation
+        costs = np.random.normal(replace_mean, replace_std, size=n_replacements)
+        costs = np.clip(costs, 0, loan_cap)
+        costs *= inflation_factor
+
+        # Step 4: record outflows
+        outflows[t] += costs.sum()
+
+        # Step 5: simulate repayment timing for each replacement loan
+        for cost in costs:
+            for future_t in range(t, N_YEARS):
+                if (np.random.rand() < p_sale) or (np.random.rand() < p_refi):
+                    inflows[future_t] += cost
+                    break
+            # If not repaid within program window → long tail, not counted here
+
+    funding, cumulative = compute_funding_requirement(outflows, inflows)
+    return funding, cumulative
 
 
+# -------------------------------------------------------
+# Monte Carlo Runner
+# -------------------------------------------------------
 def monte_carlo(n_sim=1000):
-    results = []
+    results     = []
+    final_curve = None   # store one representative cumulative curve for plotting
+
     for sim in range(n_sim):
-        funding = single_simulation()
+        funding, cumulative = single_simulation()
         results.append(funding)
-    results = np.array(results)
+        if sim == 0:
+            final_curve = cumulative
 
+    results      = np.array(results)
     mean_funding = np.mean(results)
-    p95_funding = np.percentile(results, 95)
+    p95_funding  = np.percentile(results, 95)
 
-    return mean_funding, p95_funding, results
+    return mean_funding, p95_funding, results, final_curve
+
+
+# -------------------------------------------------------
+# Grant Baseline (no repayments — upper bound)
+# -------------------------------------------------------
+def grant_baseline():
+    """
+    Under a pure grant model, there are no inflows.
+    Funding required = total outflows across all years.
+    Run one simulation with inflows zeroed out.
+    """
+    outflows = np.zeros(N_YEARS)
+
+    for t in range(N_YEARS):
+        inflation        = np.random.normal(inflation_mean, inflation_std)
+        inflation_factor = (1 + inflation) ** t
+
+        weather_event = np.random.rand() < p_weather_event
+        p_failure     = p_base_failure * (weather_multiplier if weather_event else 1.0)
+
+        failures     = np.random.rand(HOMES) < p_failure
+        replacements = failures & (np.random.rand(HOMES) < p_replace)
+        n_replacements = replacements.sum()
+
+        if n_replacements == 0:
+            continue
+
+        costs = np.random.normal(replace_mean, replace_std, size=n_replacements)
+        costs = np.clip(costs, 0, loan_cap)
+        costs *= inflation_factor
+        outflows[t] += costs.sum()
+
+    return outflows.sum()
+
+
+# -------------------------------------------------------
+# Visualizations
+# -------------------------------------------------------
+def plot_results(results, mean_funding, p95_funding, cumulative_curve):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle("LEAP Program — Monte Carlo Funding Analysis", fontsize=14)
+
+    # Plot 1: Distribution of funding needs
+    ax1 = axes[0]
+    ax1.hist(results, bins=40, color="steelblue", edgecolor="white")
+    ax1.axvline(mean_funding, color="orange", linestyle="--", label=f"Mean: ${mean_funding:,.0f}")
+    ax1.axvline(p95_funding,  color="red",    linestyle="--", label=f"95th pct: ${p95_funding:,.0f}")
+    ax1.set_xlabel("Funding Required ($)")
+    ax1.set_ylabel("Frequency")
+    ax1.set_title("Distribution of Peak Funding Needs")
+    ax1.legend()
+
+    # Plot 2: Sample cumulative cash flow curve
+    ax2 = axes[1]
+    ax2.plot(YEARS, cumulative_curve, color="steelblue", marker="o")
+    ax2.axhline(0, color="gray", linestyle="--")
+    ax2.set_xlabel("Year")
+    ax2.set_ylabel("Cumulative Net Cash ($)")
+    ax2.set_title("Sample Cumulative Funding Gap (Single Simulation)")
+    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+
+    plt.tight_layout()
+    plt.savefig("leap_results.png", dpi=150)
+    plt.show()
+
+
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
+if __name__ == "__main__":
+
+    print("Running Monte Carlo simulation...")
+    mean_funding, p95_funding, results, cumulative_curve = monte_carlo(n_sim=1000)
+
+    print(f"\n--- Loan Model Results ---")
+    print(f"Mean Funding Needed : ${mean_funding:,.0f}")
+    print(f"95% Funding Needed  : ${p95_funding:,.0f}")
+
+    # Grant comparison (single estimate — no repayments)
+    grant_runs = [grant_baseline() for _ in range(200)]
+    mean_grant = np.mean(grant_runs)
+    print(f"\n--- Grant Model Comparison ---")
+    print(f"Mean Grant Funding  : ${mean_grant:,.0f}")
+    print(f"Loan vs Grant Savings: ${mean_grant - mean_funding:,.0f} "
+          f"({(mean_grant - mean_funding) / mean_grant * 100:.1f}% reduction)")
+
+    plot_results(results, mean_funding, p95_funding, cumulative_curve)
