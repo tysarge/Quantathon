@@ -66,16 +66,19 @@ def single_simulation():
     inflows  = np.zeros(N_YEARS)
 
     # Rebuild schedule each simulation with stochastic decay
-    # Each year's decay rate is drawn from Normal(decay_mean, decay_std)
+    # 10% fewer homes helped each year from the remaining pool
+    # Homes helped each year = drop between consecutive counts (the difference)
     decays   = np.random.normal(decay_mean, decay_std, size=N_YEARS)
-    decays   = np.clip(decays, 0, 1)   # decay can't be negative or >100%
-    weights  = np.zeros(N_YEARS)
-    weights[0] = 1.0
+    decays   = np.clip(decays, 0, 1)
+    counts   = np.zeros(N_YEARS)
+    counts[0] = HOMES
     for t in range(1, N_YEARS):
-        weights[t] = weights[t-1] * (1 - decays[t])
-    weights /= weights.sum()
-    schedule = np.round(weights * HOMES).astype(int)
-    schedule[0] += HOMES - schedule.sum()  # fix rounding
+        counts[t] = counts[t-1] * (1 - decays[t])
+
+    differences = np.zeros(N_YEARS)
+    for t in range(1, N_YEARS):
+        differences[t] = counts[t-1] - counts[t]
+    schedule = np.round(differences).astype(int)
 
     for t in range(N_YEARS):
         n_homes = schedule[t]
@@ -141,8 +144,22 @@ def monte_carlo(n_sim=1000):
 def grant_baseline():
     outflows = np.zeros(N_YEARS)
 
+    # Build stochastic schedule for this run
+    decays  = np.random.normal(decay_mean, decay_std, size=N_YEARS)
+    decays  = np.clip(decays, 0, 1)
+    counts  = np.zeros(N_YEARS)
+    counts[0] = HOMES
+    for t in range(1, N_YEARS):
+        counts[t] = counts[t-1] * (1 - decays[t])
+
+    # Homes helped = differences between consecutive years (homes that drop out)
+    differences = np.zeros(N_YEARS)
+    for t in range(1, N_YEARS):
+        differences[t] = counts[t-1] - counts[t]
+    n_helped = np.round(differences).astype(int)
+
     for t in range(N_YEARS):
-        n_homes = SCHEDULE[t]
+        n_homes = n_helped[t]
 
         if n_homes == 0:
             continue
