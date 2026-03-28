@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.stats as stats
 
 # -------------------------------------------------------
 # Core Funding Function
@@ -14,11 +15,10 @@ def compute_funding_requirement(outflows, inflows):
 # Parameters
 # -------------------------------------------------------
 HOMES        = 72848
-YEARS        = np.arange(2026, 2038)   # fixed: 2026–2037 inclusive (12 years)
+YEARS        = np.arange(2026, 2038)
 N_YEARS      = len(YEARS)
 
 # Pipe failure
-# NOTE: separated into two distinct probabilities (were incorrectly the same variable)
 p_base_failure   = 0.02     # annual base probability a pipe fails (~2% per year, ~50yr lifespan)
 p_weather_event  = 0.002    # probability of an extreme weather year
 weather_multiplier = 2.0    # failure rate multiplier during weather event
@@ -30,7 +30,7 @@ p_replace = 0.40            # 40% of failures → full replacement (loan issued)
 
 # Loan parameters
 replace_mean = 7386          # mean replacement cost
-replace_std  = 1500          # standard deviation of replacement cost
+replace_std  = 2613.92       # standard deviation of replacement cost
 loan_cap     = 10000         # max loan amount per LEAP rules
 
 # Repayment triggers
@@ -104,9 +104,18 @@ def monte_carlo(n_sim=1000):
 
     results      = np.array(results)
     mean_funding = np.mean(results)
+
+    # 95th percentile: the funding level that covers 95% of simulated scenarios
+    # (a distributional worst-case, not an inferential statistic)
     p95_funding  = np.percentile(results, 95)
 
-    return mean_funding, p95_funding, results, final_curve
+    # 95% confidence interval: how precisely we've estimated the TRUE mean
+    # using a t-distribution to account for finite sample size
+    se  = stats.sem(results)                                  # standard error of the mean
+    ci  = stats.t.interval(0.95, df=len(results)-1,
+                           loc=mean_funding, scale=se)        # (lower, upper)
+
+    return mean_funding, p95_funding, ci, results, final_curve
 
 
 # -------------------------------------------------------
@@ -145,19 +154,24 @@ def grant_baseline():
 # -------------------------------------------------------
 # Visualizations
 # -------------------------------------------------------
-def plot_results(results, mean_funding, p95_funding, cumulative_curve):
+def plot_results(results, mean_funding, p95_funding, ci, cumulative_curve):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("LEAP Program — Monte Carlo Funding Analysis", fontsize=14)
 
     # Plot 1: Distribution of funding needs
     ax1 = axes[0]
     ax1.hist(results, bins=40, color="steelblue", edgecolor="white")
-    ax1.axvline(mean_funding, color="orange", linestyle="--", label=f"Mean: ${mean_funding:,.0f}")
-    ax1.axvline(p95_funding,  color="red",    linestyle="--", label=f"95th pct: ${p95_funding:,.0f}")
+    ax1.axvline(mean_funding, color="orange", linestyle="--",
+                label=f"Mean: ${mean_funding:,.0f}")
+    ax1.axvline(p95_funding,  color="red",    linestyle="--",
+                label=f"95th pct: ${p95_funding:,.0f}")
+    # Shade the 95% confidence interval around the mean
+    ax1.axvspan(ci[0], ci[1], alpha=0.15, color="orange",
+                label=f"95% CI: (${ci[0]:,.0f} – ${ci[1]:,.0f})")
     ax1.set_xlabel("Funding Required ($)")
     ax1.set_ylabel("Frequency")
     ax1.set_title("Distribution of Peak Funding Needs")
-    ax1.legend()
+    ax1.legend(fontsize=8)
 
     # Plot 2: Sample cumulative cash flow curve
     ax2 = axes[1]
@@ -179,18 +193,21 @@ def plot_results(results, mean_funding, p95_funding, cumulative_curve):
 if __name__ == "__main__":
 
     print("Running Monte Carlo simulation...")
-    mean_funding, p95_funding, results, cumulative_curve = monte_carlo(n_sim=1000)
+    mean_funding, p95_funding, ci, results, cumulative_curve = monte_carlo(n_sim=1000)
 
     print(f"\n--- Loan Model Results ---")
-    print(f"Mean Funding Needed : ${mean_funding:,.0f}")
-    print(f"95% Funding Needed  : ${p95_funding:,.0f}")
+    print(f"Mean Funding Needed  : ${mean_funding:,.0f}")
+    print(f"95% Confidence Interval: (${ci[0]:,.0f}  –  ${ci[1]:,.0f})")
+    print(f"  → We are 95% confident the true mean funding need falls in this range.")
+    print(f"95th Percentile      : ${p95_funding:,.0f}")
+    print(f"  → 95% of simulated scenarios required less than this amount.")
 
     # Grant comparison (single estimate — no repayments)
     grant_runs = [grant_baseline() for _ in range(200)]
     mean_grant = np.mean(grant_runs)
     print(f"\n--- Grant Model Comparison ---")
-    print(f"Mean Grant Funding  : ${mean_grant:,.0f}")
+    print(f"Mean Grant Funding   : ${mean_grant:,.0f}")
     print(f"Loan vs Grant Savings: ${mean_grant - mean_funding:,.0f} "
           f"({(mean_grant - mean_funding) / mean_grant * 100:.1f}% reduction)")
 
-    plot_results(results, mean_funding, p95_funding, cumulative_curve)
+    plot_results(results, mean_funding, p95_funding, ci, cumulative_curve)
