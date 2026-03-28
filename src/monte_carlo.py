@@ -4,7 +4,7 @@ def computing_reqs(outflows, inflows):
     net_cash = np.array(outflows) - np.array(inflows) 
     return np.max(cumulative)
 
-# ----- parameters ----
+# ----- parameters ----     
 homes =
 years = np.arange(2026, 2037)  
 n_years = len(years)            
