@@ -41,6 +41,10 @@ inflation_std  = 0.0394
 p_weather_event   = 0.002
 weather_cost_mult = 1.15    # costs run ~15% higher in a weather year
 
+# Participation — only ~70% of scheduled homes actually follow through
+participate_mean = 0.70
+participate_std  = 0.05     # year-to-year variability in uptake
+
 
 # -------------------------------------------------------
 # Build replacement schedule
@@ -66,8 +70,6 @@ def single_simulation():
     inflows  = np.zeros(N_YEARS)
 
     # Rebuild schedule each simulation with stochastic decay
-    # 10% fewer homes helped each year from the remaining pool
-    # Homes helped each year = drop between consecutive counts (the difference)
     decays   = np.random.normal(decay_mean, decay_std, size=N_YEARS)
     decays   = np.clip(decays, 0, 1)
     counts   = np.zeros(N_YEARS)
@@ -81,7 +83,12 @@ def single_simulation():
     schedule = np.round(differences).astype(int)
 
     for t in range(N_YEARS):
-        n_homes = schedule[t]
+        # Draw a participation rate for this year (stochastic, mean 70%)
+        p_participate = np.random.normal(participate_mean, participate_std)
+        p_participate = np.clip(p_participate, 0, 1)
+
+        # Only a binomial draw of scheduled homes actually follow through
+        n_homes = np.random.binomial(schedule[t], p_participate)
 
         if n_homes == 0:
             continue
@@ -152,14 +159,18 @@ def grant_baseline():
     for t in range(1, N_YEARS):
         counts[t] = counts[t-1] * (1 - decays[t])
 
-    # Homes helped = differences between consecutive years (homes that drop out)
     differences = np.zeros(N_YEARS)
     for t in range(1, N_YEARS):
         differences[t] = counts[t-1] - counts[t]
     n_helped = np.round(differences).astype(int)
 
     for t in range(N_YEARS):
-        n_homes = n_helped[t]
+        # Draw a participation rate for this year (stochastic, mean 70%)
+        p_participate = np.random.normal(participate_mean, participate_std)
+        p_participate = np.clip(p_participate, 0, 1)
+
+        # Only a binomial draw of scheduled homes actually follow through
+        n_homes = np.random.binomial(n_helped[t], p_participate)
 
         if n_homes == 0:
             continue
@@ -221,6 +232,7 @@ if __name__ == "__main__":
     print(f"Total homes in pool    : {HOMES:,} (all replaced exactly once)")
     print(f"Schedule               : front-loaded, -10% per year (2026→2037)")
     print(f"Homes per year         : {SCHEDULE[0]:,} (2026) → {SCHEDULE[-1]:,} (2037)")
+    print(f"Participation rate     : {participate_mean*100:.0f}% mean (±{participate_std*100:.0f}% std, stochastic per year)")
     print("Running Monte Carlo simulation...")
 
     mean_funding, p95_funding, ci, results, cumulative_curve = monte_carlo(n_sim=1000)
